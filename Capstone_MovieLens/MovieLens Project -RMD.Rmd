@@ -1,0 +1,453 @@
+---
+title: "MovieLens Project"
+author: "Gonzalo Vazquez"
+date: "02-23-2023"
+output: pdf_document
+---
+
+
+## Executive Summary
+
+The dataset used in this project is MovieLens 10M dataset, which is a dataset of movie ratings collected by MovieLens, a movie recommendation service. The goal of this project is to predict movie ratings from edx dataset using the final_holdout_test dataset. The key steps performed in this project are loading and pre-processing the dataset, making data exploration, modeling and showing some conclusions from there.
+
+
+
+```{r Create edx set, validation set, and submission file, echo=FALSE, message=FALSE,  warning=FALSE}
+##########################################################
+# Create edx and final_holdout_test sets
+##########################################################
+
+
+# Note: this process could take a couple of minutes
+
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+
+
+library(tidyverse)
+library(caret)
+
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+
+options(timeout = 120)
+
+
+dl <- "ml-10M100K.zip"
+if(!file.exists(dl))
+  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+
+ratings_file <- "ml-10M100K/ratings.dat"
+if(!file.exists(ratings_file))
+  unzip(dl, ratings_file)
+
+
+movies_file <- "ml-10M100K/movies.dat"
+if(!file.exists(movies_file))
+  unzip(dl, movies_file)
+
+
+ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+                         stringsAsFactors = FALSE)
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+ratings <- ratings %>%
+  mutate(userId = as.integer(userId),
+         movieId = as.integer(movieId),
+         rating = as.numeric(rating),
+         timestamp = as.integer(timestamp))
+
+
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
+                        stringsAsFactors = FALSE)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- movies %>%
+  mutate(movieId = as.integer(movieId))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+
+# Final hold-out test set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.6 or later
+# set.seed(1) # if using R 3.5 or earlier
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+
+# Make sure userId and movieId in final hold-out test set are also in edx set
+final_holdout_test <- temp %>%
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+
+# Add rows removed from final hold-out test set back into edx set
+removed <- anti_join(temp, final_holdout_test)
+edx <- rbind(edx, removed)
+
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+
+
+```{r Importing necesary libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(dslabs)
+library(knitr)
+library(stringr)
+library(gridExtra)
+library(caret)
+
+```
+
+
+
+
+
+## Exploring the dataset 
+
+
+First lets to explore some of the rows and columns the dataset has
+
+```{r Heads of the dataset, echo=FALSE}
+library(knitr)
+kable(head(edx))
+```
+
+\
+
+Then we can check if there are some missing values in the dataset to see how to proceed for the analysis
+```{r Observing missing values, echo=FALSE}
+kable(colSums(is.na(edx)), caption = "Missing Values by Variable", col.names = "Values")
+```
+
+\
+
+We can also check the quantity of users, movies, ratings and genres
+
+```{r Quantity of users, movies, ratings and genres, echo=FALSE}
+
+#Calculating the number of users, movies, ratings and genres
+n_users <- length(unique(edx$userId))
+n_movies <- length(unique(edx$movieId))
+n_ratings <- length(unique(edx$rating))
+n_genres <- length(unique(edx$genres))
+
+#Creating a tibble with the number of users, movies, ratings, and genres
+results <- tibble(n_users = n_users, n_movies = n_movies, n_ratings = n_ratings, n_genres=n_genres)
+
+# Setting the column names for the results tibble
+colnames(results) <- c("Users", "Movies", "Ratings", "Genres")
+
+# Displaying the results in a table using the kable function
+kable(results, caption = "Quantity of unique values of each variable")
+```
+
+\
+
+Here we can see the different genres and how many there are
+
+```{r Type of genres, echo=FALSE}
+
+# Converting the genres column to character type
+edx$genres <- as.character(edx$genres)
+
+# Extracting a list of unique genres from the genres column
+unique_genres_list <- str_extract_all(unique(edx$genres), "[^|]+") %>%
+  unlist() %>%
+  unique()
+
+# Counting the number of occurrences of each genre in the genres column using sapply function
+genres_count <- sapply(unique_genres_list, function(x) sum(grepl(x, edx$genres)))
+
+# Creating a tibble with the genres and their respective counts
+results <- tibble(Genre = unique_genres_list, Count = genres_count)
+
+# Displaying the results in a table using kable function
+kable(results, caption = "Genres Summary", col.names = c("Genre", "Count"))
+
+```
+
+\
+
+Finally I will check the number of ratings across different dimensions of the dataset: users, movies and genres
+
+```{r Histograms of Ratings, echo=FALSE}
+
+# creating an histogram of the number of ratings per user
+hist_users <- edx %>%
+  count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 40, fill = "green") + 
+  labs(title = "Histogram of ratings per user",
+       x = "Number of ratings per user", y = "Count", fill = element_blank()) +
+  theme_classic()
+
+# creating an histogram of the number of ratings per movie
+hist_movies <- edx %>%
+  count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 40, fill = "steelblue") + 
+  labs(title = "Histogram of ratings per movie",
+       x = "Number of ratings per movie", y = "Count", fill = element_blank()) +
+  theme_classic()
+
+# creating an histogram of the number of ratings per genre 
+hist_genres <- edx %>%
+  count(genres) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 40, fill = "red") + 
+  labs(title = "Histogram of ratings per genre",
+       x = "Number of ratings per genre", y = "Count", fill = element_blank()) +
+  theme_classic()
+
+# arranging the three histograms in a 2x2 grid
+grid.arrange(hist_users,hist_movies, hist_genres,
+             ncol = 2, nrow = 2)
+```
+We can see that there are a lot of ratings concentrated in a few movies and genres. We can also see that there are users that rated movies more than others 
+
+
+## Analysis 
+
+To predict the ratings of an user for a movie we will use this formula: 
+$$ Y_{u,i} = \mu + b_i + b_u + \epsilon_{u,i} $$
+
+Where \( Y_{u,i} \) represent the predicted rating of user \( u \) for item \( i \). The terms \( \mu \), \( b_i \), and \( b_u \) represent, respectively, the overall mean rating, the bias associated with item \( i \), and the bias associated with user \( u \). Finally, \( \epsilon_{u,i} \) represents the error term for the predicted rating \( Y_{u,i} \).
+
+\
+
+To evaluate the accuracy of recommendation models we will use this function:
+```{r RMSE to measure of the accuracy of the predicted ratings}
+calculate_rmse <- function(real_ratings, ratings_predictions){
+  sqrt(mean((real_ratings - ratings_predictions)^2))
+}
+```
+
+\
+
+We can start calculating the RMSE between the actual ratings (edx$rating) and the mean rating (mu_hat). Then we will keep adding more dimensions to see if we can reduce the RMSE result 
+```{r Simple average, echo=FALSE}
+# Mean of all ratings
+mu_hat <- mean(edx$rating)
+
+# Root mean squared error (RMSE)
+rmse_value <- sqrt(mean((edx$rating - mu_hat)^2))
+
+# Storing the RMSE value in a tibble along with a label for the method
+rmse_average <- tibble(Method = "average", RMSE = rmse_value)
+
+# Printing the method name and RMSE value
+results <- c(paste("Method: ", rmse_average$Method, "\nRMSE: ", rmse_average$RMSE, "\n"))
+
+kable(rmse_average, caption = "RMSE Summary", col.names = c("Method", "RMSE"))
+```
+
+\
+
+Movie effect model incorporates biases associated with movies. We can observe a lower RMSE with the movie effect
+```{r Movie effect, echo=FALSE}
+mu <- mean(edx$rating)
+
+# Movie averages
+movie_avgs <- edx %>% group_by(movieId) %>% summarize(b_i = mean(rating - mu))
+
+# Movie averages to estimate
+predicted_ratings <- mu + final_holdout_test %>% left_join(movie_avgs, by='movieId') %>% pull(b_i)
+
+rmse_movie <- RMSE(predicted_ratings, final_holdout_test$rating)
+
+results <- c(paste("Method: Movie Effect Model\nRMSE: ", rmse_movie, "\n"))
+
+kable(data.frame(Method = "Movie Effect Model", RMSE = rmse_movie), caption = "RMSE Summary", col.names = c("Method", "RMSE"))
+```
+
+\
+
+User effect model is built on the previous model, adding the biases associated with users. We can observe that the RMSE is also reduced applying this model
+```{r Movie+User effect model, echo=FALSE}
+# Movie averages
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+
+# User averages
+user_avgs <- edx %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+# Movie and user averages to estimate
+predicted_ratings <- final_holdout_test %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  mutate(pred = mu + b_i + b_u) %>% 
+  pull(pred)
+
+rmse_movie_users <- RMSE(predicted_ratings, final_holdout_test$rating)
+
+kable(data.frame(Method = "Movie + User Effects Model", RMSE = rmse_movie_users))
+
+```
+
+\
+
+Here movie, user, and genre effect model is developed, which includes biases associated with genres in addition to the previous two. The RMSE result is also reduced with this model
+```{r Movie + User + Genre Effect Model, echo=FALSE}
+
+# Grouping data by genre and calculate genre average
+genres_avgs <- edx %>%
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - mu - b_i - b_u))
+
+predicted_ratings <- final_holdout_test %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  left_join(genres_avgs, by = 'genres') %>%
+  mutate(pred = mu + b_i + b_u + b_g) %>% 
+  pull(pred)
+
+# Predicting ratings between 0.5 and 5
+predicted_ratings <- ifelse(predicted_ratings < 0.5, 0.5, 
+                            ifelse(predicted_ratings > 5, 5, predicted_ratings))
+
+# RMSE for movie + user + genre effect model
+rmse_m_u_g <- RMSE(predicted_ratings, final_holdout_test$rating)
+
+
+# Displaying results in a table
+results_table <- data.frame(Method = "Movie + User + Genre Effect Model", RMSE = rmse_m_u_g)
+kable(results_table, align = "c", col.names = c("Method", "RMSE"))
+
+
+```
+
+\
+
+Here is the regularized movie and user effect model. It includes an additional parameter \(\lambda\) that shrinks the biases to the mean of the biases.
+
+```{r Regularized Movie + User, Effect Model, echo=FALSE,  warning=FALSE}
+ 
+set.seed(1)
+
+# Creating a 90/10 split of the data into train and test datasets
+test_index <- createDataPartition(edx$rating, times=1, p=0.9, list=FALSE)
+edx_test <- edx[-test_index,]
+edx_train <- edx[test_index,]
+
+# Entries in edx_test that have both a movieId and a userId 
+edx_test <- edx_test %>%
+semi_join(edx_train, by = "movieId") %>%
+semi_join(edx_train, by = "userId")
+
+# Lambda values to try
+lambdas <- seq(0, 10, 0.3)
+
+# Root mean squared error (RMSE) of the predicted ratings
+rmses <- sapply(lambdas, function(l1){
+  # Mean rating for the training set
+  mu <- mean(edx_train$rating)
+  
+  # Movie bias term for each movie
+  b_i <- edx_train %>% group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+l1))
+  
+  # User bias term for each user
+  b_u <- edx_train %>% left_join(b_i, by="movieId") %>%
+  group_by(userId) %>% summarize(b_u = sum(rating - mu - b_i)/(n()+l1))
+  
+  # Ratings using the calculated mean, movie bias, and user bias
+  predicted_ratings <- edx_test %>% left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>% mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+  
+  # RMSE between the predicted and actual ratings
+  return(RMSE(predicted_ratings, edx_test$rating))
+})
+
+# Lambda value that minimizes the RMSE
+l1 <- lambdas[which.min(rmses)]
+
+# RMSE values for each lambda value
+qplot(lambdas, rmses, main = paste("Regularized Movie + user Effect Model"))
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+#Mean value of the rating column 
+mean_rating <- mean(edx$rating)
+
+#Grouping the edx data frame by movieId and calculate the bi value for each movie
+bi_values <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(bi = sum(rating - mean_rating)/(n() + l1))
+
+#joining the bi_values on movieId, grouping the joined data by userId, and calculate bu, the deviation of each user's rating from the average rating of all users, adjusted for the deviation of the movie's rating from the mean rating
+
+bu_values <- edx %>% 
+  left_join(bi_values, by="movieId") %>% 
+  group_by(userId) %>% 
+  summarize(bu = sum(rating - bi - mean_rating)/(n() + l1))
+
+
+#joining the bi_values and bu_values by movieId and userId respectively, and calculating the predicted rating as the sum of the mean rating, bi, and bu
+pred_ratings <- final_holdout_test %>%
+  left_join(bi_values, by="movieId") %>%
+  left_join(bu_values, by="userId") %>%
+  mutate(pred = mean_rating + bi + bu) %>%
+  select(pred) %>%
+  pull()
+
+
+# Taking two input vectors and returns the root mean squared error between them
+
+rmse_reg <- function(x, y, na.rm = TRUE){
+score <- sqrt(mean((x - y)^2, na.rm = na.rm))
+}
+
+
+#Root mean squared error between the predicted ratings and the actual ratings in final_holdout_test and store it in the variable result
+
+result <- rmse_reg(pred_ratings, final_holdout_test$rating, na.rm = TRUE)
+
+# Display the result with kable()
+kable(data.frame(Method = "Regularized movie + user effect model", RMSE = result), align = "c", row.names = FALSE)
+```
+
+\
+
+## Final results:
+
+As is shown in the data exploration histograms, we can observe that a few movies and genres receive a large number of ratings, while a few people tend to rate many movies. Therefore, in the analysis section, I worked with different models to evaluate how the prediction results improve, as I show in the table below:: 
+
+```{r Results, echo=FALSE}
+Method <- c("Average", "Movie Effect Model", "Movie + User Effect Model", "Movie + User + Genre Effect Model", "Regularized movie + user effect model")
+RMSE <- c("1.0603", "0.9439", "0.8653", "0.8647", "0.8648")
+
+df <- data.frame(Method, RMSE)
+knitr::kable(df)
+```
+
+\
+
+## Conclusions:
+
+We can conclude that working with models with more dimensions increase the precision of the results but we can't conclude that regularized Movie+User Effect model improves the final results as it has a slightly higher RMSE compared with the Movie+User+Genre Effect Model.
+
+Overall, the results suggest that the Movie + User + Genre Effect Model is the best-performing method among the ones compared, with an RMSE of 0.8647
+
+For further research we could explore why regularization don't decrease the RMSE and keep experimenting with different regularization strengths and evaluate their RMSE 
+
